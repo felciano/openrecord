@@ -111,10 +111,13 @@ async function loginAccount(account: AccountConfig): Promise<MyChartRequest> {
         return result.mychartRequest;
       }
       console.error(`[openrecord:${hostname}] passkey login failed (${result.state}), falling back to user/pass`);
-      clearAccountPasskey(hostname);
+      // Only clear if the passkey is actually invalid
+      if (result.state === 'invalid_login') {
+        clearAccountPasskey(hostname);
+      }
     } catch (err) {
       console.error(`[openrecord:${hostname}] passkey login error: ${(err as Error).message}, falling back to user/pass`);
-      clearAccountPasskey(hostname);
+      // Do NOT clear passkey on generic errors (network, timeout, etc)
     }
   }
 

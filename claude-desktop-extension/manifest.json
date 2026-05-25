@@ -26,6 +26,7 @@
   "tools": [
     { "name": "list_accounts", "description": "List configured MyChart accounts and their connection status. Returns the hostname for each — pass that as `account` to any other tool." },
     { "name": "search_mycharts", "description": "Search the directory of known MyChart instances by name." },
+    { "name": "get_setup_widget", "description": "Display an interactive widget for connecting a MyChart account. Use this if the user wants a GUI instead of chat-based setup." },
     { "name": "setup_account", "description": "Attempt to log into MyChart with hostname + username + password. May return need_2fa." },
     { "name": "complete_2fa", "description": "Finish a setup_account flow that returned need_2fa." },
     { "name": "register_passkey", "description": "Register a passkey on an already-connected account so future logins skip the password and 2FA." },

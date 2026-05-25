@@ -26,7 +26,14 @@ export interface AccountConfig {
 }
 
 export function normalizeHostname(hostname: string): string {
-  return hostname.toLowerCase().trim();
+  const trimmed = hostname.toLowerCase().trim();
+  try {
+    // Strips protocol and path, keeps host:port
+    const parsed = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`);
+    return parsed.host;
+  } catch {
+    return trimmed;
+  }
 }
 
 function ensureDir(dir: string): void {
