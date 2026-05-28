@@ -130,6 +130,27 @@ describe('Health check', () => {
 });
 
 // ===================================================================
+// 1b. Landing / login page
+// ===================================================================
+
+describe('Login page', () => {
+  it('renders the newsletter signup as the hero CTA with a work-in-progress notice', async () => {
+    const res = await fetch(`${BASE_URL}/login`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Newsletter form is the primary call to action.
+    expect(html).toContain('Notify me');
+    expect(html).toContain('Email Address');
+    // Work-in-progress messaging is surfaced.
+    expect(html).toContain('Work in progress');
+    expect(html).toContain('OpenRecord is still a work in progress');
+    // The old "Get started" hero button and bottom newsletter section are gone;
+    // the newsletter form ("Subscribe to Newsletter") no longer lives at the bottom.
+    expect(html).not.toContain('Subscribe to Newsletter');
+  });
+});
+
+// ===================================================================
 // 2. Authentication
 // ===================================================================
 

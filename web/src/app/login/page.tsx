@@ -588,6 +588,10 @@ export default function LoginPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 items-center gap-16 max-w-[1300px] w-full z-10">
           <div className="flex flex-col items-start md:items-start text-left">
             <div className="flex flex-wrap gap-2 mb-6">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50/80 border border-amber-100/80 text-[11px] font-medium tracking-wide text-amber-700 shadow-sm backdrop-blur-md">
+                <Icon icon="lucide:construction" width={14} height={14} />
+                Work in progress
+              </span>
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50/80 border border-blue-100/80 text-[11px] font-medium tracking-wide text-blue-600 shadow-sm backdrop-blur-md">
                 <Icon icon="solar:lock-keyhole-minimalistic-linear" width={14} height={14} />
                 Open-source
@@ -608,23 +612,59 @@ export default function LoginPage() {
               to Claude (or other AI assistants). Manage your health records, send
               messages, book appointments, request refills, and more—all with AI.
             </p>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-4 items-start">
-              <button
-                onClick={() => setShowModal(true)}
-                className="group inline-flex items-center justify-center px-10 py-4 text-base font-medium text-white bg-slate-900 border border-slate-800 rounded-full cursor-pointer hover:bg-slate-800 hover:-translate-y-1 transition-all duration-300 shadow-[0_15px_35px_rgba(0,0,0,0.04),inset_0_0_0_1px_rgba(255,255,255,0.5)] hover:shadow-[0_25px_45px_rgba(0,0,0,0.08)]"
-              >
-                Get started
-                <Icon icon="lucide:arrow-right" width={18} height={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
-              </button>
-              <a
-                href="https://github.com/Fan-Pier-Labs/openrecord"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-6 py-3 rounded-full text-sm font-medium text-slate-700 bg-white/40 backdrop-blur-xl border border-white/60 shadow-[0_10px_30px_rgba(0,0,0,0.05),inset_0_1px_0_rgba(255,255,255,0.9)] hover:bg-white/60 hover:shadow-[0_15px_40px_rgba(0,0,0,0.08)] transition-all duration-300 flex items-center gap-2"
-              >
-                <Icon icon="mdi:github" width={18} height={18} />
-                GitHub
-              </a>
+            <div className="w-full max-w-[520px]">
+              {newsletterStatus === "success" ? (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6 flex flex-col items-center text-center">
+                  <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mb-3 text-emerald-600">
+                    <Icon icon="lucide:check" width={24} height={24} />
+                  </div>
+                  <h3 className="text-lg font-medium text-emerald-900 mb-1">Thanks for subscribing!</h3>
+                  <p className="text-emerald-700 text-sm">We&apos;ll let you know the moment new features and providers go live.</p>
+                </div>
+              ) : (
+                <form onSubmit={handleNewsletterSubmit} className="flex flex-col gap-3">
+                  <p className="text-sm text-slate-500 font-light">
+                    OpenRecord is still a work in progress. Drop your email to get notified when it&apos;s ready.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <Input
+                      type="text"
+                      placeholder="Your Name"
+                      required
+                      value={newsletterName}
+                      onChange={(e) => setNewsletterName(e.target.value)}
+                      className="flex-1 bg-white/80 backdrop-blur-md h-12 rounded-xl border-slate-200/70"
+                      disabled={newsletterStatus === "loading"}
+                    />
+                    <Input
+                      type="email"
+                      placeholder="Email Address"
+                      required
+                      value={newsletterEmail}
+                      onChange={(e) => setNewsletterEmail(e.target.value)}
+                      className="flex-1 bg-white/80 backdrop-blur-md h-12 rounded-xl border-slate-200/70"
+                      disabled={newsletterStatus === "loading"}
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={newsletterStatus === "loading"}
+                    className="group h-12 rounded-full bg-slate-900 hover:bg-slate-800 hover:-translate-y-0.5 text-white text-base font-medium transition-all duration-300 shadow-[0_15px_35px_rgba(0,0,0,0.04),inset_0_0_0_1px_rgba(255,255,255,0.1)] hover:shadow-[0_25px_45px_rgba(0,0,0,0.08)]"
+                  >
+                    {newsletterStatus === "loading" ? (
+                      <span className="flex items-center gap-2">
+                        <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                        Subscribing...
+                      </span>
+                    ) : (
+                      <>
+                        Notify me
+                        <Icon icon="lucide:arrow-right" width={18} height={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
+                      </>
+                    )}
+                  </Button>
+                </form>
+              )}
             </div>
           </div>
 
@@ -885,64 +925,6 @@ export default function LoginPage() {
             Get started
             <Icon icon="lucide:arrow-right" width={18} height={18} className="ml-2 group-hover:translate-x-1 transition-transform" />
           </button>
-        </section>
-
-        {/* Newsletter Section */}
-        <section className="py-24 relative flex flex-col items-center justify-center text-center px-6 z-20 bg-slate-50/50 border-t border-slate-200/40">
-          <div className="max-w-xl w-full">
-            <h2 className="text-3xl md:text-4xl font-medium text-slate-900 tracking-tight mb-4">
-              Stay updated
-            </h2>
-            <p className="text-md text-slate-500 mb-8 font-light">
-              Join our newsletter to get the latest updates on OpenRecord, new AI capabilities, and supported healthcare providers.
-            </p>
-            {newsletterStatus === "success" ? (
-              <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-8 flex flex-col items-center">
-                <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mb-4 text-emerald-600">
-                  <Icon icon="lucide:check" width={24} height={24} />
-                </div>
-                <h3 className="text-xl font-medium text-emerald-900 mb-2">Thanks for subscribing!</h3>
-                <p className="text-emerald-700">We&apos;ll keep you updated on the latest features.</p>
-              </div>
-            ) : (
-              <form onSubmit={handleNewsletterSubmit} className="flex flex-col gap-4">
-                <div className="flex flex-col sm:flex-row gap-4">
-                  <Input
-                    type="text"
-                    placeholder="Your Name"
-                    required
-                    value={newsletterName}
-                    onChange={(e) => setNewsletterName(e.target.value)}
-                    className="flex-1 bg-white h-12 rounded-xl"
-                    disabled={newsletterStatus === "loading"}
-                  />
-                  <Input
-                    type="email"
-                    placeholder="Email Address"
-                    required
-                    value={newsletterEmail}
-                    onChange={(e) => setNewsletterEmail(e.target.value)}
-                    className="flex-1 bg-white h-12 rounded-xl"
-                    disabled={newsletterStatus === "loading"}
-                  />
-                </div>
-                <Button
-                  type="submit"
-                  className="w-full bg-slate-900 hover:bg-slate-800 text-white h-12 rounded-xl text-base transition-all duration-300"
-                  disabled={newsletterStatus === "loading"}
-                >
-                  {newsletterStatus === "loading" ? (
-                    <span className="flex items-center gap-2">
-                      <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                      Subscribing...
-                    </span>
-                  ) : (
-                    "Subscribe to Newsletter"
-                  )}
-                </Button>
-              </form>
-            )}
-          </div>
         </section>
 
         {/* Footer */}
