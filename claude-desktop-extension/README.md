@@ -104,10 +104,17 @@ claude-desktop-extension/
 ## Development
 
 ```bash
-bun run build      # produces dist/server.cjs
+bun run typecheck  # tsc --noEmit — catches type errors esbuild silently skips
+bun run build      # tsc --noEmit, then tsup → dist/server.cjs
 bun run dev        # tsup watch mode — rebuilds dist/server.cjs on every save
 bun run pack       # build + run `mcpb pack` → openrecord.mcpb
 ```
+
+> **Type checking.** tsup bundles with esbuild, which strips types without
+> checking them — so type errors (wrong function arguments, missing fields)
+> compile clean and only blow up at runtime. `bun run build` now runs
+> `tsc --noEmit` first so those are caught at build time and in CI. Tests are
+> type-checked too (`@types/bun` provides the `bun:test` types).
 
 ### Hot-reload dev loop (recommended)
 

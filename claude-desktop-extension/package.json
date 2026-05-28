@@ -5,7 +5,8 @@
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
-    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && tsup",
     "dev": "tsup --watch",
     "dev:reload": "bun run build && node dev/dev-reload.mjs",
     "dev:proxy": "./node_modules/.bin/mcpmon --watch dist --ext cjs -- node dist/server.cjs",
@@ -23,6 +24,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/inspector": "^0.21.2",
+    "@types/bun": "^1.3.14",
     "@types/node": "^25.6.0",
     "concurrently": "^9.2.1",
     "mcpmon": "^1.0.1",

@@ -69,8 +69,6 @@ import { getEducationMaterials } from '../../scrapers/myChart/educationMaterials
 import { getEhiExportTemplates } from '../../scrapers/myChart/ehiExport';
 import { getLinkedMyChartAccounts } from '../../scrapers/myChart/other_mycharts/other_mycharts';
 import { requestMedicationRefill } from '../../scrapers/myChart/medicationRefill';
-import { downloadImagingStudyDirect } from '../../scrapers/myChart/eunity/imagingDirectDownload';
-import { convertCloToBitmap16 } from '../../scrapers/myChart/clo-image-parser/clo_to_bitmap';
 
 import { searchInstances } from './instances';
 import {
@@ -89,11 +87,13 @@ import {
   findAccount,
 } from './credential-store';
 import { addPending, takePending } from './pending-logins';
-import { encodeCloAsJpeg } from './imaging/jpeg-encoder';
+import { downloadStudyJpegs, encodeImageId, decodeImageId } from './imaging/download-study';
 
 // ── Result helpers ──────────────────────────────────────────────────────────
 
-type ToolContent = { type: 'text'; text: string };
+type ToolContent =
+  | { type: 'text'; text: string }
+  | { type: 'image'; data: string; mimeType: string };
 type ToolResult = { content: ToolContent[]; isError?: boolean };
 
 function jsonResult(data: unknown): ToolResult {
@@ -458,7 +458,7 @@ export function registerAllTools(server: McpServer): void {
   registerScraperTool(server, 'get_profile', 'Patient profile (name, DOB, MRN, PCP) + email address.', {}, async (req) => {
     const profile = await getMyChartProfile(req);
     let email: string | undefined;
-    try { email = await getEmail(req); } catch { /* ignore */ }
+    try { email = (await getEmail(req)) ?? undefined; } catch { /* ignore */ }
     return { ...profile, email };
   });
 
@@ -498,39 +498,88 @@ export function registerAllTools(server: McpServer): void {
   // ── Results ───────────────────────────────────────────────────────────────
 
   registerScraperTool(server, 'get_lab_results', 'Lab results with reference ranges and trending.', {}, (req) => listLabResults(req));
-  registerScraperTool(server, 'get_imaging_results', 'Imaging results metadata (X-ray, MRI, CT, US, etc.). Use download_imaging_study for the actual images.', {}, (req) => getImagingResults(req));
+  registerScraperTool(server, 'get_imaging_results', 'Imaging results metadata (X-ray, MRI, CT, US, etc.). Each entry that has viewable images carries an `image_id` — pass that single value to download_imaging_study to get the actual images.', {}, async (req) => {
+    const results = await getImagingResults(req);
+    // Expose a single opaque `image_id` per study instead of the raw
+    // { fdi, ord } pair — one copy-paste token is easier for the model to
+    // hand to download_imaging_study without mixing the two fields up.
+    return results.map((r) => {
+      if (!r.fdiContext) return r;
+      const { fdiContext, ...rest } = r;
+      return { ...rest, image_id: encodeImageId(fdiContext) };
+    });
+  });
 
-  registerScraperTool(server, 'download_imaging_study',
-    'Download a single imaging study and return the first N images as JPEGs (base64). The MCPB encodes locally — no native sharp dependency.',
+  server.registerTool(
+    'download_imaging_study',
     {
-      study_id: z.string().describe('Imaging study ID from get_imaging_results.'),
-      max_images: z.number().int().min(1).max(20).optional().describe('Maximum number of images to encode and return (default 3).'),
-      jpeg_quality: z.number().int().min(1).max(100).optional().describe('JPEG quality 1-100 (default 85).'),
+      title: 'Download imaging study',
+      description:
+        'Download a single imaging study (X-ray, CT, MRI, ultrasound, etc.) and return the actual images as JPEGs that render inline in the conversation. ' +
+        'Pass the `image_id` from the chosen get_imaging_results entry. ' +
+        'Images are downloaded and encoded locally on the user’s machine (pure-JS CLO→JPEG, no native dependency).',
+      inputSchema: {
+        account: z.string().describe('MyChart hostname (the "account" / "account_id" — get the exact value from list_accounts).'),
+        image_id: z.string().describe('The `image_id` value from the chosen get_imaging_results entry. Copy it verbatim.'),
+        study_name: z.string().optional().describe('Human-readable study name for labeling (e.g. the orderName). Optional.'),
+        max_images: z.number().int().min(1).max(20).optional().describe('Maximum number of images to download and return (default 3).'),
+        jpeg_quality: z.number().int().min(1).max(100).optional().describe('JPEG quality 1-100 (default 85).'),
+      } satisfies ZodRawShape,
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (req, { study_id, max_images, jpeg_quality }) => {
-      const downloaded = await downloadImagingStudyDirect(req, { studyId: study_id });
-      if (!downloaded || !downloaded.images || downloaded.images.length === 0) {
-        return { study_id, images: [] };
-      }
-      const limit = Math.min(downloaded.images.length, max_images ?? 3);
-      const out: Array<{ index: number; width: number; height: number; bytes: number; jpegBase64: string }> = [];
-      for (let i = 0; i < limit; i++) {
-        const img = downloaded.images[i];
-        try {
-          const bm = convertCloToBitmap16(img.cloData);
-          const encoded = encodeCloAsJpeg(bm, jpeg_quality ?? 85);
-          out.push({
-            index: i,
-            width: encoded.width,
-            height: encoded.height,
-            bytes: encoded.bytes,
-            jpegBase64: Buffer.from(encoded.buffer).toString('base64'),
-          });
-        } catch (err) {
-          out.push({ index: i, width: 0, height: 0, bytes: 0, jpegBase64: `Error encoding image: ${(err as Error).message}` });
+    async (args) => {
+      try {
+        const account = typeof args.account === 'string' ? args.account : '';
+        const imageId = typeof args.image_id === 'string' ? args.image_id : '';
+        const studyName = typeof args.study_name === 'string' ? args.study_name : undefined;
+        const maxImages = typeof args.max_images === 'number' ? args.max_images : undefined;
+        const jpegQuality = typeof args.jpeg_quality === 'number' ? args.jpeg_quality : undefined;
+
+        const fdiContext = decodeImageId(imageId);
+        const session = await resolveSession(account);
+        const result = await downloadStudyJpegs(session, fdiContext, {
+          studyName,
+          maxImages,
+          jpegQuality,
+        });
+
+        const content: ToolContent[] = [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                study_name: result.studyName,
+                total_images: result.totalImages,
+                returned: result.returned,
+                ...(result.errors.length ? { errors: result.errors } : {}),
+              },
+              null,
+              2,
+            ),
+          },
+        ];
+
+        // Emit one image content block per encoded image so Claude Desktop
+        // renders the actual X-ray instead of a base64 blob inside JSON text.
+        for (const img of result.images) {
+          content.push({ type: 'image', data: img.jpegBase64, mimeType: 'image/jpeg' });
         }
+
+        if (result.returned === 0) {
+          content.push({
+            type: 'text',
+            text:
+              'No images could be downloaded for this study. ' +
+              (result.errors.length
+                ? 'See the errors above.'
+                : 'The study may not expose viewable image data, or the viewer session expired — try get_imaging_results again for a fresh fdiContext.'),
+          });
+        }
+
+        return { content };
+      } catch (err) {
+        return errorResult((err as Error).message);
       }
-      return { study_id, total_images: downloaded.images.length, returned: out.length, images: out };
     },
   );
 
