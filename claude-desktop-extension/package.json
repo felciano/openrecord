@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",
-    "dev:reload": "bun run build && concurrently -k -n tsup,mcp -c blue,green \"tsup --watch\" \"./node_modules/.bin/mcp-inspector ./node_modules/.bin/mcpmon --watch dist --ext cjs -- node dist/server.cjs\"",
+    "dev:reload": "bun run build && node dev/dev-reload.mjs",
     "dev:proxy": "./node_modules/.bin/mcpmon --watch dist --ext cjs -- node dist/server.cjs",
     "pack": "bun run build && npx -y @anthropic-ai/mcpb pack . openrecord.mcpb",
     "smoke": "bun run build && node smoke.cjs"

@@ -95,9 +95,28 @@ bun run dev:reload   # build once, then tsup --watch + MCP Inspector via mcpmon
 ```
 
 This opens the [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
-in a browser where you can list/call tools and see logs. Edit a file in `src/` →
-tsup rebuilds `dist/server.cjs` → mcpmon restarts the server → the Inspector
-stays connected. This is a faster loop than round-tripping through Claude Desktop.
+in a browser where you can list/call tools, see logs, and render the `ui://`
+setup widget interactively (the Inspector acts as the MCP Apps host). Edit a file
+in `src/` → tsup rebuilds `dist/server.cjs` → mcpmon restarts the server → the
+Inspector stays connected. This is a faster loop than round-tripping through
+Claude Desktop.
+
+**Ports / parallel worktrees.** Only the Inspector binds TCP ports — two of them:
+the browser UI (`CLIENT_PORT`, default 6274) and the proxy (`SERVER_PORT`, default
+6277). `tsup` and `mcpmon` don't bind ports (mcpmon is a stdio proxy), and each
+worktree's `node dist/server.cjs` is an independent stdio child. So `dev:reload`
+grabs two **free OS-assigned ports** on each run and prints the UI URL — multiple
+worktrees / Claude sessions can each run their own loop without colliding. Pin
+them by exporting `CLIENT_PORT` / `SERVER_PORT` before running.
+
+**Running many at once.** Ports won't collide, but each `dev:reload` is ~7
+processes, loads the full server bundle, and opens a browser tab — so a dozen of
+them is heavy. The Inspector is the expensive part; you rarely need its UI in
+*every* worktree. Prefer `bun run dev:proxy` (just `mcpmon` — no ports, no
+browser) in the worktrees that only need the server to hot-reload, and run the
+full `dev:reload` only where you're actively inspecting. If you do want several
+Inspectors, set `MCP_AUTO_OPEN_ENABLED=false` to skip the auto-opened tabs and
+use the URL each run prints.
 
 To auto-reload the **installed** extension inside Claude Desktop (instead of the
 Inspector), point its launch command at the proxy:
