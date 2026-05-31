@@ -993,7 +993,9 @@ export function visitsPage(): string {
         fetch('/${FIRST_PATH}/Visits/VisitsList/LoadPast', { method: 'POST', credentials: 'same-origin' }).then(r => r.json()),
       ]).then(([up, past]) => {
         visitData.upcoming = (up.LaterVisitsList || []).concat(up.EarlierVisitsList || []);
-        visitData.past = past.PastVisitsList || [];
+        // LoadPast now returns the real MyChart shape: visits live under
+        // List[orgId].List (one page). Flatten across orgs for the demo view.
+        visitData.past = Object.values(past.List || {}).flatMap(o => o.List || []);
         renderVisits('upcoming');
       });
     </script>
