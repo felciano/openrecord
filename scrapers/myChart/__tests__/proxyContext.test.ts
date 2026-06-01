@@ -6,6 +6,7 @@ import {
   verifyActiveProxyTarget,
   type ProxyTarget,
 } from '../proxyContext'
+import type { RequestConfig } from '../types'
 import { resetLogSink, silenceLogger } from '../../../shared/logger'
 
 beforeAll(() => {
@@ -16,7 +17,7 @@ afterAll(() => {
   resetLogSink()
 })
 
-function requestWithMockedResponses(handler: (config: any) => Response | Promise<Response>): MyChartRequest {
+function requestWithMockedResponses(handler: (config: RequestConfig) => Response | Promise<Response>): MyChartRequest {
   const req = new MyChartRequest('mychart.example.org')
   req.setFirstPathPart('MyChart')
   req.makeRequest = mock(handler) as typeof req.makeRequest
