@@ -83,6 +83,18 @@ export function createDemoMcpServer(): McpServer {
     }
   );
 
+  reg('list_patients',
+    async (_args: { instance?: string }): Promise<CallToolResult> => {
+      return jsonResult({
+        patients: [
+          { id: '', displayName: 'Homer Simpson', isSelf: true },
+          { id: 'demo-proxy-1', displayName: 'Marge Simpson', isSelf: false },
+          { id: 'demo-proxy-2', displayName: 'Bart Simpson', isSelf: false },
+        ],
+      });
+    }
+  );
+
   reg('complete_2fa',
     async (_args: { code: string; instance: string }): Promise<CallToolResult> => {
       return jsonResult({ status: 'logged_in', message: '2FA completed successfully', hostname: DEMO_HOSTNAME, username: DEMO_USERNAME });
