@@ -59,6 +59,22 @@ The fastest way to get started. Sign up, connect your MyChart account, and add t
 
 One URL works for all your MyChart accounts. If you have multiple accounts connected, tools accept an optional `instance` parameter to target a specific hospital. TOTP-enabled instances auto-connect on first tool call.
 
+### Proxy accounts (family members)
+
+If your MyChart login has proxy access to family members, every read tool
+accepts an optional `patient` parameter (a name or ID from `list_patients`).
+Omit it for your own record. Each response is wrapped with the verified
+patient identity, and the server re-verifies the active patient context on
+every call — if the context cannot be confirmed, the call fails
+(`context_verify_mismatch`) rather than returning another patient's data.
+Unknown or ambiguous names fail with the list of valid patients; there is
+never a silent fallback. Write tools (messages, refills, booking, emergency
+contacts) always operate on the account holder's own record in this version.
+
+Built on the proxy-context helpers from upstream PR #194. The web MCP server
+is the only proxy-aware surface for now; the OpenClaw plugin and Claude
+Desktop extension remain self-only.
+
 MCP servers added in Claude Desktop automatically sync to the **Claude mobile app** and any other MCP-compatible client.
 
 ### 2. OpenClaw Plugin (Local, No Server)
