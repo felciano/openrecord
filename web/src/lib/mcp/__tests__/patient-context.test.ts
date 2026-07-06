@@ -75,14 +75,20 @@ const makeReq = (): MyChartRequest => ({}) as unknown as MyChartRequest
 
 // Build fake deps over a mutable "portal" whose selected target changes on switch.
 function makePortal(initialTargets: ProxyTarget[]) {
-  const state = { targets: initialTargets.map(t => ({ ...t })), discoverCalls: 0, switchCalls: 0 }
+  const state = {
+    targets: initialTargets.map(t => ({ ...t })),
+    discoverCalls: 0,
+    switchCalls: 0,
+    lastSwitchOptions: undefined as unknown,
+  }
   const deps: ProxyDeps = {
     discover: async () => {
       state.discoverCalls += 1
       return state.targets.map(t => ({ ...t }))
     },
-    switchTo: async (_req, target) => {
+    switchTo: async (_req, target, options) => {
       state.switchCalls += 1
+      state.lastSwitchOptions = options
       const match = state.targets.find(t =>
         (target.id && t.id === target.id) ||
         (target.displayName && t.displayName.toLowerCase() === target.displayName.toLowerCase()))
@@ -245,5 +251,108 @@ describe('listPatients', () => {
   it('returns [] for accounts without proxy access', async () => {
     const { deps } = makePortal([])
     expect(await listPatients(makeReq(), deps)).toEqual([])
+  })
+})
+
+describe('proxy safety: fail-closed on empty discovery', () => {
+  // (a) transient empty discovery after a proxy switch fails closed for reads
+  it('transient empty discovery after a proxy switch fails closed for reads', async () => {
+    const { state, deps } = makePortal(TARGETS)
+    const req = makeReq()
+    // Establish: session has switched to a non-self proxy patient.
+    await runInPatientContext(req, 'Rita Felciano', async () => 'ok', deps)
+    // Simulate transient server blip / HTML redesign: discover returns nothing.
+    state.targets = []
+    let ran = false
+    await expect(
+      runInPatientContext(req, undefined, async () => { ran = true; return 'data' }, deps)
+    ).rejects.toThrow(/proxy_discovery_failed/)
+    expect(ran).toBe(false)
+  })
+
+  // (b) transient empty discovery after a proxy switch fails closed for writes
+  it('transient empty discovery after a proxy switch fails closed for writes', async () => {
+    const { state, deps } = makePortal(TARGETS)
+    const req = makeReq()
+    // Establish: session has switched to a non-self proxy patient.
+    await runInPatientContext(req, 'Rita Felciano', async () => 'ok', deps)
+    // Simulate transient discovery failure.
+    state.targets = []
+    let ran = false
+    await expect(
+      runPinnedToSelf(req, async () => { ran = true; return 'write' }, deps)
+    ).rejects.toThrow(/proxy_discovery_failed/)
+    expect(ran).toBe(false)
+  })
+
+  // (c) runPinnedToSelf never uses the fast path
+  it('runPinnedToSelf never uses the fast path', async () => {
+    const { state, deps } = makePortal([])
+    const req = makeReq()
+    // Two sequential writes on a no-proxy portal — each must run discovery.
+    await runPinnedToSelf(req, async () => 'w1', deps)
+    await runPinnedToSelf(req, async () => 'w2', deps)
+    expect(state.discoverCalls).toBe(2)
+  })
+
+  // (d) no-proxy cache does not survive a later proxy switch
+  it('no-proxy cache does not survive a later proxy switch', async () => {
+    const { state, deps } = makePortal([])
+    const req = makeReq()
+    // Step 1: empty portal → bare read caches no-proxy.
+    await runInPatientContext(req, undefined, async () => 1, deps)
+    expect(state.discoverCalls).toBe(1)
+    // Step 2: proxies appear mid-session.
+    state.targets = TARGETS.map(t => ({ ...t }))
+    // Step 3: read for a proxy patient succeeds and establishes switchedToProxy.
+    await runInPatientContext(req, 'Rita Felciano', async () => 2, deps)
+    expect(state.discoverCalls).toBe(2)
+    // Step 4: bare read must NOT use the stale no-proxy fast path.
+    const discoversBefore = state.discoverCalls
+    const result = await runInPatientContext(req, undefined, async () => 3, deps)
+    expect(state.discoverCalls).toBe(discoversBefore + 1)
+    // After switching back to self the result must carry isSelf=true.
+    expect((result as { patient: { isSelf: boolean } }).patient.isSelf).toBe(true)
+  })
+
+  // (e) concurrent proxy read and self-pinned write serialize with write observing self
+  it('concurrent proxy read and self-pinned write serialize with the write observing self', async () => {
+    const { state, deps } = makePortal(TARGETS)
+    const req = makeReq()
+    const events: string[] = []
+    let capturedIsSelf = false
+
+    const slowProxyFn = async (_r: MyChartRequest) => {
+      events.push('proxy:start')
+      await new Promise<void>(r => setTimeout(r, 30))
+      events.push('proxy:end')
+      return 'proxy-data'
+    }
+
+    const writeFn = async (_r: MyChartRequest) => {
+      events.push('write:start')
+      capturedIsSelf = !!state.targets.find(t => t.isSelected)?.isSelf
+      events.push('write:end')
+      return 'write-data'
+    }
+
+    await Promise.all([
+      runInPatientContext(req, 'Rita Felciano', slowProxyFn, deps),
+      runPinnedToSelf(req, writeFn, deps),
+    ])
+
+    expect(events).toEqual(['proxy:start', 'proxy:end', 'write:start', 'write:end'])
+    expect(capturedIsSelf).toBe(true)
+  })
+
+  // (f) switch options forward discoveredTargets (prevents TOCTOU re-discovery)
+  it('switch options forward discoveredTargets', async () => {
+    const { state, deps } = makePortal(TARGETS)
+    const req = makeReq()
+    await runInPatientContext(req, 'Rita Felciano', async () => 1, deps)
+    const opts = state.lastSwitchOptions as { discoveredTargets: ProxyTarget[] } | undefined
+    expect(opts).toBeDefined()
+    expect(opts!.discoveredTargets).toHaveLength(TARGETS.length)
+    expect(opts!.discoveredTargets.map((t: ProxyTarget) => t.id)).toEqual(TARGETS.map(t => t.id))
   })
 })

@@ -76,6 +76,15 @@ const NO_PROXY_TTL_MS = 15 * 60 * 1000;
 const noProxyCache = new WeakMap<MyChartRequest, { fetchedAt: number }>();
 const mutexes = new WeakMap<MyChartRequest, Promise<unknown>>();
 
+/**
+ * Tracks whether this session has ever switched to a non-self proxy patient.
+ * True  = the portal was previously on a proxy record; a subsequent empty
+ *         discovery result is dangerously ambiguous and must not pass through.
+ * False/absent = session has always been on self; an empty discovery result
+ *         safely means "this account has no proxy access".
+ */
+const switchedToProxy = new WeakMap<MyChartRequest, boolean>();
+
 /** Serialize all patient-context work per session. */
 function withMutex<T>(req: MyChartRequest, fn: () => Promise<T>): Promise<T> {
   const prev = mutexes.get(req) ?? Promise.resolve();
@@ -88,6 +97,15 @@ function toRef(target: ProxyTarget): PatientRef {
   return { id: target.id, displayName: target.displayName, isSelf: target.isSelf };
 }
 
+type PinAndRunOpts = {
+  /**
+   * When true, a warm no-proxy cache (and no explicit patient arg) allows
+   * the call to bypass discovery and run fn directly. Must be false for any
+   * write/self-pinned operation so that discovery always verifies the context.
+   */
+  allowFastPath: boolean;
+};
+
 /**
  * Pin the session to `patient` (omitted -> self), verify, then run `fn`.
  * Returns the verified patient identity alongside the data, or verified=null
@@ -97,11 +115,22 @@ async function pinAndRun<T>(
   req: MyChartRequest,
   patient: string | undefined,
   fn: (req: MyChartRequest) => Promise<T>,
-  deps: ProxyDeps
+  deps: ProxyDeps,
+  opts: PinAndRunOpts = { allowFastPath: true }
 ): Promise<{ verified: PatientRef | null; data: T }> {
   // Fast path: recently confirmed no-proxy account and no explicit patient.
+  // Guarded by allowFastPath (writes must never skip discovery) and by
+  // switchedToProxy (a session that previously switched to a proxy patient
+  // must always re-verify — a warm no-proxy cache from before the switch
+  // would be dangerously stale).
   const noProxy = noProxyCache.get(req);
-  if (!patient && noProxy && Date.now() - noProxy.fetchedAt < NO_PROXY_TTL_MS) {
+  if (
+    opts.allowFastPath &&
+    !patient &&
+    noProxy &&
+    Date.now() - noProxy.fetchedAt < NO_PROXY_TTL_MS &&
+    switchedToProxy.get(req) !== true
+  ) {
     return { verified: null, data: await fn(req) };
   }
 
@@ -111,6 +140,16 @@ async function pinAndRun<T>(
     const targets = await deps.discover(req);
 
     if (targets.length === 0) {
+      // If this session previously switched to a non-self proxy patient the
+      // current patient context is unknown — fail closed rather than letting
+      // a transient discovery failure silently pass through as "no proxy access".
+      if (switchedToProxy.get(req) === true) {
+        throw new Error(
+          `proxy_discovery_failed: proxy discovery returned no patients, but this session ` +
+          `previously switched to a proxy patient's record, so the active patient context ` +
+          `cannot be verified. No data was fetched. Retry, or reconnect the instance.`
+        );
+      }
       noProxyCache.set(req, { fetchedAt: Date.now() });
       if (patient && patient.trim()) {
         throw new Error(
@@ -153,6 +192,16 @@ async function pinAndRun<T>(
       }
     }
 
+    // Update the switchedToProxy flag based on where the session landed.
+    // This flag is the guard that prevents a stale no-proxy cache from
+    // masquerading as "safe self context" after the portal was switched.
+    if (verified.isSelf) {
+      switchedToProxy.set(req, false);
+    } else {
+      switchedToProxy.set(req, true);
+      noProxyCache.delete(req); // belt-and-suspenders: clear any stale no-proxy entry
+    }
+
     return { verified: toRef(verified), data: await fn(req) };
   });
 }
@@ -175,13 +224,16 @@ export async function runInPatientContext<T>(
  * Self-pinned operation (all write/action tools): forces the session back to
  * the account holder before running, so a preceding proxy read can never leak
  * its context into a write. Response shape is unchanged (no echo).
+ *
+ * Never uses the no-proxy fast path — discovery is always performed so that
+ * the patient context is freshly verified before every write.
  */
 export async function runPinnedToSelf<T>(
   req: MyChartRequest,
   fn: (req: MyChartRequest) => Promise<T>,
   deps: ProxyDeps = defaultDeps
 ): Promise<T> {
-  const { data } = await pinAndRun(req, undefined, fn, deps);
+  const { data } = await pinAndRun(req, undefined, fn, deps, { allowFastPath: false });
   return data;
 }
 
