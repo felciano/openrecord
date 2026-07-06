@@ -355,4 +355,81 @@ describe('proxy safety: fail-closed on empty discovery', () => {
     expect(opts!.discoveredTargets).toHaveLength(TARGETS.length)
     expect(opts!.discoveredTargets.map((t: ProxyTarget) => t.id)).toEqual(TARGETS.map(t => t.id))
   })
+
+  // (g) unconfirmed switch (redirect-chain moved portal, but error thrown) fails closed afterwards.
+  // CRITICAL: this test MUST fail against the current code — the switchedToProxy flag is only set
+  // on the success path, so subsequent discovery blips silently pass through as "no proxy".
+  it('unconfirmed switch fails closed afterwards', async () => {
+    const { state, deps } = makePortal(TARGETS)
+    const req = makeReq()
+
+    // switchTo moves the portal to Rita (simulating the redirect chain completing) then throws
+    // the "could not be confirmed" error exactly as the real upstream would.
+    const failingDeps: ProxyDeps = {
+      ...deps,
+      switchTo: async () => {
+        // Simulate: portal moved to Rita despite the error (redirect chain ran).
+        state.targets.forEach(t => { t.isSelected = t.displayName === 'Rita Felciano' })
+        throw new Error('Proxy target switch could not be confirmed after redirect chain.')
+      },
+    }
+
+    // 1. Switch attempt throws context_verify_mismatch; fn never runs.
+    let ran1 = false
+    await expect(
+      runInPatientContext(req, 'Rita Felciano', async () => { ran1 = true; return 'data' }, failingDeps)
+    ).rejects.toThrow(/context_verify_mismatch/)
+    expect(ran1).toBe(false)
+
+    // 2. Simulate transient empty discovery (server blip / HTML redesign).
+    state.targets = []
+
+    // 3. A bare read must fail closed — NOT silently pass through as "no proxy".
+    let ran2 = false
+    await expect(
+      runInPatientContext(req, undefined, async () => { ran2 = true; return 'data' }, deps)
+    ).rejects.toThrow(/proxy_discovery_failed/)
+    expect(ran2).toBe(false)
+
+    // 4. A self-pinned write must also fail closed.
+    let ran3 = false
+    await expect(
+      runPinnedToSelf(req, async () => { ran3 = true; return 'write' }, deps)
+    ).rejects.toThrow(/proxy_discovery_failed/)
+    expect(ran3).toBe(false)
+  })
+
+  // (h) fast path executes under the mutex — prevents TOCTOU between a fast-path read
+  // and a concurrent switch in progress on the same request object.
+  // Against current code this test fails because both fast-path callers bypass the mutex
+  // and their fn calls overlap.
+  it('fast path executes under the mutex', async () => {
+    const { deps } = makePortal([])
+    const req = makeReq()
+
+    // Warm the no-proxy cache with a single discovery call.
+    await runInPatientContext(req, undefined, async () => 1, deps)
+
+    const events: string[] = []
+
+    await Promise.all([
+      // Slow fast-path read: fn takes 30 ms.
+      runInPatientContext(req, undefined, async () => {
+        events.push('slow:start')
+        await new Promise<void>(r => setTimeout(r, 30))
+        events.push('slow:end')
+        return 'slow'
+      }, deps),
+      // Fast fast-path read: fn takes 5 ms.
+      runInPatientContext(req, undefined, async () => {
+        events.push('fast:start')
+        await new Promise<void>(r => setTimeout(r, 5))
+        events.push('fast:end')
+        return 'fast'
+      }, deps),
+    ])
+
+    // With fast path inside the mutex the two fn calls are fully serialized.
+    expect(events).toEqual(['slow:start', 'slow:end', 'fast:start', 'fast:end'])
+  })
 })

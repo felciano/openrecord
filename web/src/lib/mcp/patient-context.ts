@@ -118,36 +118,38 @@ async function pinAndRun<T>(
   deps: ProxyDeps,
   opts: PinAndRunOpts = { allowFastPath: true }
 ): Promise<{ verified: PatientRef | null; data: T }> {
-  // Fast path: recently confirmed no-proxy account and no explicit patient.
-  // Guarded by allowFastPath (writes must never skip discovery) and by
-  // switchedToProxy (a session that previously switched to a proxy patient
-  // must always re-verify — a warm no-proxy cache from before the switch
-  // would be dangerously stale).
-  const noProxy = noProxyCache.get(req);
-  if (
-    opts.allowFastPath &&
-    !patient &&
-    noProxy &&
-    Date.now() - noProxy.fetchedAt < NO_PROXY_TTL_MS &&
-    switchedToProxy.get(req) !== true
-  ) {
-    return { verified: null, data: await fn(req) };
-  }
-
   return withMutex(req, async () => {
+    // [Fix 2] Fast path moved inside the mutex: prevents a concurrent switch from
+    // interleaving with a fast-path read on the same req (TOCTOU). The serialization
+    // cost is acceptable on a single-operator server.
+    // Guarded by allowFastPath (writes must never skip discovery) and by
+    // switchedToProxy (a session that previously switched to a proxy patient
+    // must always re-verify — a warm no-proxy cache from before the switch
+    // would be dangerously stale).
+    const noProxy = noProxyCache.get(req);
+    if (
+      opts.allowFastPath &&
+      !patient &&
+      noProxy &&
+      Date.now() - noProxy.fetchedAt < NO_PROXY_TTL_MS &&
+      switchedToProxy.get(req) !== true
+    ) {
+      return { verified: null, data: await fn(req) };
+    }
+
     // Fresh discovery on every call: doubles as the per-call verification
     // (isSelected reflects the portal's actual current context).
     const targets = await deps.discover(req);
 
     if (targets.length === 0) {
-      // If this session previously switched to a non-self proxy patient the
-      // current patient context is unknown — fail closed rather than letting
-      // a transient discovery failure silently pass through as "no proxy access".
+      // If this session previously switched toward a proxy patient the current
+      // patient context is unknown — fail closed rather than letting a transient
+      // discovery failure silently pass through as "no proxy access".
       if (switchedToProxy.get(req) === true) {
         throw new Error(
-          `proxy_discovery_failed: proxy discovery returned no patients, but this session ` +
-          `previously switched to a proxy patient's record, so the active patient context ` +
-          `cannot be verified. No data was fetched. Retry, or reconnect the instance.`
+          `proxy_discovery_failed: proxy discovery returned no patients while verifying the context` +
+          `${patient ? ` for '${patient}'` : ''}; the session previously switched toward a proxy ` +
+          `record, so the active patient context cannot be verified. No data was fetched. Retry, or reconnect the instance.`
         );
       }
       noProxyCache.set(req, { fetchedAt: Date.now() });
@@ -177,6 +179,16 @@ async function pinAndRun<T>(
     } else {
       // Prefer id; the self target from some discovery fallbacks has id ''.
       const ref = desired.id ? { id: desired.id } : { displayName: desired.displayName };
+      // [Fix 1] Set switchedToProxy pessimistically BEFORE the switch attempt.
+      // switchProxyTarget executes a redirect chain that may move the portal to the
+      // new target BEFORE it can confirm. If it then throws, the portal may already
+      // be on the requested target — leaving the flag unset would allow a subsequent
+      // transient empty discovery to silently pass through as "no proxy".
+      // In the else branch, alreadyActive was false, so even a self-switch means the
+      // current context is not verified self — set flag true to fail closed on error.
+      // The post-success block below updates it accurately once we have verified landing.
+      switchedToProxy.set(req, true);
+      noProxyCache.delete(req);
       try {
         const switched = await deps.switchTo(req, ref, { discoveredTargets: targets });
         verified = switched.target;
