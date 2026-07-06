@@ -45,6 +45,7 @@ import type { BillingAccount } from '../../../../scrapers/myChart/bills/types';
 import type { ConversationListResponse } from '../../../../scrapers/myChart/messages/conversations';
 import type { LinkedMyChart } from '../../../../scrapers/myChart/other_mycharts/other_mycharts';
 import { toolDef } from './tool-definitions';
+import { runInPatientContext, runPinnedToSelf, listPatients } from './patient-context';
 
 function errorResult(message: string): CallToolResult {
   return { content: [{ type: 'text', text: message }], isError: true };
@@ -220,12 +221,19 @@ export function pickInstance(
 
 type ScraperFn = (req: MyChartRequest) => Promise<unknown>;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function registerScraperTool(server: McpServer, userId: string, reg: (name: string, handler: (...args: any[]) => Promise<CallToolResult>) => void, name: string, scraperFn: ScraperFn) {
+function registerScraperTool(
+  server: McpServer,
+  userId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  reg: (name: string, handler: (...args: any[]) => Promise<CallToolResult>) => void,
+  name: string,
+  scraperFn: ScraperFn,
+  scope: 'patient' | 'self' = 'patient'
+) {
   reg(name,
-    async (args: { instance?: string }): Promise<CallToolResult> => {
+    async (args: { instance?: string; patient?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: name });
-      console.log(`[mcp] Tool call: ${name} (user=${userId}, instance=${args.instance || 'auto'})`);
+      console.log(`[mcp] Tool call: ${name} (user=${userId}, instance=${args.instance || 'auto'}, patient=${args.patient ? 'explicit' : 'self'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) {
@@ -236,7 +244,9 @@ function registerScraperTool(server: McpServer, userId: string, reg: (name: stri
         const infoBefore = result.mychartRequest.getCookieInfo();
         console.log(`[mcp] Tool ${name}: starting with ${infoBefore.count} cookies (${result.instance.hostname})`);
 
-        const data = await scraperFn(result.mychartRequest);
+        const data = scope === 'patient'
+          ? await runInPatientContext(result.mychartRequest, args.patient, scraperFn)
+          : await runPinnedToSelf(result.mychartRequest, scraperFn);
         const resultStr = JSON.stringify(data);
         const isEmpty = resultStr === '{}' || resultStr === '[]' || resultStr === 'null';
         console.log(`[mcp] Tool ${name}: success (${resultStr.length} chars${isEmpty ? ', WARNING: empty' : ''})`);
@@ -292,6 +302,29 @@ export function createMcpServer(userId: string): McpServer {
         const error = err as Error;
         console.error(`[mcp] list_accounts: error -`, error.message, error.stack);
         return errorResult(`Error listing accounts: ${error.message}`);
+      }
+    }
+  );
+
+  reg('list_patients',
+    async (args: { instance?: string }): Promise<CallToolResult> => {
+      sendTelemetryEvent('mcp_tool_called', { tool_name: 'list_patients' });
+      console.log(`[mcp] Tool call: list_patients (user=${userId}, instance=${args.instance || 'auto'})`);
+      try {
+        const result = await resolveRequest(userId, args.instance);
+        if ('error' in result) return errorResult(result.error);
+        const patients = await listPatients(result.mychartRequest);
+        if (patients.length === 0) {
+          return jsonResult({
+            patients: [],
+            note: 'No proxy access on this MyChart account; only the account holder\'s own record is available.',
+          });
+        }
+        return jsonResult({ patients });
+      } catch (err) {
+        const error = err as Error;
+        console.error(`[mcp] list_patients: error -`, error.message, error.stack);
+        return errorResult(`Error listing patients: ${error.message}`);
       }
     }
   );
@@ -412,7 +445,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Scraper tools
+  // Scraper tools (patient-scoped)
   registerScraperTool(server, userId, reg,'get_profile', async (req) => {
     const profile = await getMyChartProfile(req);
     const email = await getEmail(req);
@@ -426,14 +459,15 @@ export function createMcpServer(userId: string): McpServer {
   registerScraperTool(server, userId, reg,'get_upcoming_visits', upcomingVisits);
 
   reg('get_past_visits',
-    async (args: { years_back?: number; instance?: string }): Promise<CallToolResult> => {
+    async (args: { years_back?: number; instance?: string; patient?: string }): Promise<CallToolResult> => {
       console.log(`[mcp] Tool call: get_past_visits (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
         const oldest = new Date();
         oldest.setFullYear(oldest.getFullYear() - (args.years_back ?? 2));
-        const data = await pastVisits(result.mychartRequest, oldest);
+        const data = await runInPatientContext(result.mychartRequest, args.patient,
+          (req) => pastVisits(req, oldest));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -445,14 +479,15 @@ export function createMcpServer(userId: string): McpServer {
 
   // List clinical notes attached to a past visit
   reg('get_visit_notes',
-    async (args: { csn: string; instance?: string }): Promise<CallToolResult> => {
+    async (args: { csn: string; instance?: string; patient?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'get_visit_notes' });
       // Don't log the CSN - it's a clinical encounter identifier.
       console.log(`[mcp] Tool call: get_visit_notes (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await getVisitNotes(result.mychartRequest, args.csn);
+        const data = await runInPatientContext(result.mychartRequest, args.patient,
+          (req) => getVisitNotes(req, args.csn));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -464,19 +499,20 @@ export function createMcpServer(userId: string): McpServer {
 
   // Fetch the rendered HTML content of a single clinical note
   reg('get_note_content',
-    async (args: { csn: string; lrp_id: string; hno_id: string; hno_dat: string; instance?: string }): Promise<CallToolResult> => {
+    async (args: { csn: string; lrp_id: string; hno_id: string; hno_dat: string; instance?: string; patient?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'get_note_content' });
       // Don't log the CSN or HNO ID - they're clinical encounter/note identifiers.
       console.log(`[mcp] Tool call: get_note_content (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await getNoteContent(result.mychartRequest, {
-          csn: args.csn,
-          lrpId: args.lrp_id,
-          hnoId: args.hno_id,
-          hnoDat: args.hno_dat,
-        });
+        const data = await runInPatientContext(result.mychartRequest, args.patient,
+          (req) => getNoteContent(req, {
+            csn: args.csn,
+            lrpId: args.lrp_id,
+            hnoId: args.hno_id,
+            hnoDat: args.hno_dat,
+          }));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -488,14 +524,15 @@ export function createMcpServer(userId: string): McpServer {
 
   // Fetch the After Visit Summary (AVS) HTML for a past visit
   reg('get_visit_avs',
-    async (args: { csn: string; instance?: string }): Promise<CallToolResult> => {
+    async (args: { csn: string; instance?: string; patient?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'get_visit_avs' });
       // Don't log the CSN - it's a clinical encounter identifier.
       console.log(`[mcp] Tool call: get_visit_avs (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await getVisitAVS(result.mychartRequest, args.csn);
+        const data = await runInPatientContext(result.mychartRequest, args.patient,
+          (req) => getVisitAVS(req, args.csn));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -507,15 +544,18 @@ export function createMcpServer(userId: string): McpServer {
 
   // Lab results — trimmed + paginated
   reg('get_lab_results',
-    async (args: { instance?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
+    async (args: { instance?: string; patient?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
       console.log(`[mcp] Tool call: get_lab_results (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const raw = await listLabResults(result.mychartRequest) as LabTestResultWithHistory[];
-        const trimmed = trimLabResults(raw);
-        const page = paginate(trimmed, args.limit ?? 10, args.offset);
-        return jsonResult({ total: trimmed.length, offset: args.offset ?? 0, count: page.length, results: page });
+        const data = await runInPatientContext(result.mychartRequest, args.patient, async (req) => {
+          const raw = await listLabResults(req) as LabTestResultWithHistory[];
+          const trimmed = trimLabResults(raw);
+          const page = paginate(trimmed, args.limit ?? 10, args.offset);
+          return { total: trimmed.length, offset: args.offset ?? 0, count: page.length, results: page };
+        });
+        return jsonResult(data);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] get_lab_results: error -`, error.message, error.stack);
@@ -526,15 +566,18 @@ export function createMcpServer(userId: string): McpServer {
 
   // Messages — trimmed + paginated
   reg('get_messages',
-    async (args: { instance?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
+    async (args: { instance?: string; patient?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
       console.log(`[mcp] Tool call: get_messages (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const raw = await listConversations(result.mychartRequest) as ConversationListResponse | null;
-        const trimmed = trimMessages(raw);
-        const page = paginate(trimmed, args.limit ?? 10, args.offset);
-        return jsonResult({ total: trimmed.length, offset: args.offset ?? 0, count: page.length, conversations: page });
+        const data = await runInPatientContext(result.mychartRequest, args.patient, async (req) => {
+          const raw = await listConversations(req) as ConversationListResponse | null;
+          const trimmed = trimMessages(raw);
+          const page = paginate(trimmed, args.limit ?? 10, args.offset);
+          return { total: trimmed.length, offset: args.offset ?? 0, count: page.length, conversations: page };
+        });
+        return jsonResult(data);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] get_messages: error -`, error.message, error.stack);
@@ -543,7 +586,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Message recipients + topics
+  // Message recipients + topics (self-pinned: always reads account holder's context)
   reg('get_message_recipients',
     async (args: { instance?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'get_message_recipients' });
@@ -551,13 +594,16 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const token = await getVerificationToken(result.mychartRequest);
-        if (!token) return errorResult('Could not get verification token');
-        const [recipients, topics] = await Promise.all([
-          getMessageRecipients(result.mychartRequest, token),
-          getMessageTopics(result.mychartRequest, token),
-        ]);
-        return jsonResult({ recipients, topics });
+        const data = await runPinnedToSelf(result.mychartRequest, async (req) => {
+          const token = await getVerificationToken(req);
+          if (!token) throw new Error('Could not get verification token');
+          const [recipients, topics] = await Promise.all([
+            getMessageRecipients(req, token),
+            getMessageTopics(req, token),
+          ]);
+          return { recipients, topics };
+        });
+        return jsonResult(data);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] get_message_recipients: error -`, error.message, error.stack);
@@ -566,7 +612,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Send new message
+  // Send new message (self-pinned: all steps run under one pin)
   reg('send_message',
     async (args: { instance?: string; recipient_name: string; topic: string; subject: string; message_body: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'send_message' });
@@ -574,46 +620,48 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const token = await getVerificationToken(result.mychartRequest);
-        if (!token) return errorResult('Could not get verification token');
+        const sendResult = await runPinnedToSelf(result.mychartRequest, async (req) => {
+          const token = await getVerificationToken(req);
+          if (!token) throw new Error('Could not get verification token');
 
-        const [recipients, topics] = await Promise.all([
-          getMessageRecipients(result.mychartRequest, token),
-          getMessageTopics(result.mychartRequest, token),
-        ]);
+          const [recipients, topics] = await Promise.all([
+            getMessageRecipients(req, token),
+            getMessageTopics(req, token),
+          ]);
 
-        // Fuzzy-match recipient by case-insensitive includes
-        const recipientQuery = args.recipient_name.toLowerCase();
-        const matchedRecipients = recipients.filter((r: MessageRecipient) =>
-          r.displayName.toLowerCase().includes(recipientQuery)
-        );
-        if (matchedRecipients.length === 0) {
-          const available = recipients.map((r: MessageRecipient) => r.displayName).join(', ');
-          return errorResult(`No recipient matching "${args.recipient_name}". Available: ${available}`);
-        }
-        if (matchedRecipients.length > 1) {
-          const matches = matchedRecipients.map((r: MessageRecipient) => r.displayName).join(', ');
-          return errorResult(`Multiple recipients match "${args.recipient_name}": ${matches}. Please be more specific.`);
-        }
-        const recipient = matchedRecipients[0];
+          // Fuzzy-match recipient by case-insensitive includes
+          const recipientQuery = args.recipient_name.toLowerCase();
+          const matchedRecipients = recipients.filter((r: MessageRecipient) =>
+            r.displayName.toLowerCase().includes(recipientQuery)
+          );
+          if (matchedRecipients.length === 0) {
+            const available = recipients.map((r: MessageRecipient) => r.displayName).join(', ');
+            throw new Error(`No recipient matching "${args.recipient_name}". Available: ${available}`);
+          }
+          if (matchedRecipients.length > 1) {
+            const matches = matchedRecipients.map((r: MessageRecipient) => r.displayName).join(', ');
+            throw new Error(`Multiple recipients match "${args.recipient_name}": ${matches}. Please be more specific.`);
+          }
+          const recipient = matchedRecipients[0];
 
-        // Fuzzy-match topic, default to first if no match
-        const topicQuery = args.topic.toLowerCase();
-        let matchedTopic = topics.find((t: MessageTopic) =>
-          t.displayName.toLowerCase().includes(topicQuery)
-        );
-        if (!matchedTopic && topics.length > 0) {
-          matchedTopic = topics[0];
-        }
-        if (!matchedTopic) {
-          return errorResult('No message topics available');
-        }
+          // Fuzzy-match topic, default to first if no match
+          const topicQuery = args.topic.toLowerCase();
+          let matchedTopic = topics.find((t: MessageTopic) =>
+            t.displayName.toLowerCase().includes(topicQuery)
+          );
+          if (!matchedTopic && topics.length > 0) {
+            matchedTopic = topics[0];
+          }
+          if (!matchedTopic) {
+            throw new Error('No message topics available');
+          }
 
-        const sendResult = await sendNewMessage(result.mychartRequest, {
-          recipient,
-          topic: matchedTopic,
-          subject: args.subject,
-          messageBody: args.message_body,
+          return sendNewMessage(req, {
+            recipient,
+            topic: matchedTopic,
+            subject: args.subject,
+            messageBody: args.message_body,
+          });
         });
 
         return jsonResult(sendResult);
@@ -625,7 +673,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Send reply to existing conversation
+  // Send reply to existing conversation (self-pinned)
   reg('send_reply',
     async (args: { instance?: string; conversation_id: string; message_body: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'send_reply' });
@@ -633,10 +681,8 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const replyResult = await sendReply(result.mychartRequest, {
-          conversationId: args.conversation_id,
-          messageBody: args.message_body,
-        });
+        const replyResult = await runPinnedToSelf(result.mychartRequest,
+          (req) => sendReply(req, { conversationId: args.conversation_id, messageBody: args.message_body }));
         return jsonResult(replyResult);
       } catch (err) {
         const error = err as Error;
@@ -646,7 +692,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Request medication refill
+  // Request medication refill (self-pinned: medication lookup + refill under one pin)
   reg('request_refill',
     async (args: { instance?: string; medication_name: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'request_refill' });
@@ -655,33 +701,36 @@ export function createMcpServer(userId: string): McpServer {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
 
-        // Get medications to find the matching one
-        const medsResult = await getMedications(result.mychartRequest);
-        const meds = medsResult.medications;
-        const query = args.medication_name.toLowerCase();
-        const matched = meds.filter(m =>
-          m.name.toLowerCase().includes(query) || m.commonName.toLowerCase().includes(query)
-        );
+        const refillResult = await runPinnedToSelf(result.mychartRequest, async (req) => {
+          // Get medications to find the matching one
+          const medsResult = await getMedications(req);
+          const meds = medsResult.medications;
+          const query = args.medication_name.toLowerCase();
+          const matched = meds.filter(m =>
+            m.name.toLowerCase().includes(query) || m.commonName.toLowerCase().includes(query)
+          );
 
-        if (matched.length === 0) {
-          const available = meds.map(m => m.name).join(', ');
-          return errorResult(`No medication matching "${args.medication_name}". Available: ${available}`);
-        }
-        if (matched.length > 1) {
-          const names = matched.map(m => m.name).join(', ');
-          return errorResult(`Multiple medications match "${args.medication_name}": ${names}. Please be more specific.`);
-        }
+          if (matched.length === 0) {
+            const available = meds.map(m => m.name).join(', ');
+            throw new Error(`No medication matching "${args.medication_name}". Available: ${available}`);
+          }
+          if (matched.length > 1) {
+            const names = matched.map(m => m.name).join(', ');
+            throw new Error(`Multiple medications match "${args.medication_name}": ${names}. Please be more specific.`);
+          }
 
-        const med = matched[0];
-        if (!med.isRefillable) {
-          return errorResult(`"${med.name}" is not refillable.`);
-        }
-        if (!med.medicationKey) {
-          return errorResult(`"${med.name}" does not have a medication key for refill requests.`);
-        }
+          const med = matched[0];
+          if (!med.isRefillable) {
+            throw new Error(`"${med.name}" is not refillable.`);
+          }
+          if (!med.medicationKey) {
+            throw new Error(`"${med.name}" does not have a medication key for refill requests.`);
+          }
 
-        const refillResult = await requestMedicationRefill(result.mychartRequest, med.medicationKey);
-        return jsonResult({ ...refillResult, medication: med.name });
+          const refillData = await requestMedicationRefill(req, med.medicationKey);
+          return { ...refillData, medication: med.name };
+        });
+        return jsonResult(refillResult);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] request_refill: error -`, error.message, error.stack);
@@ -692,20 +741,22 @@ export function createMcpServer(userId: string): McpServer {
 
   // Billing — trimmed + paginated
   reg('get_billing',
-    async (args: { instance?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
+    async (args: { instance?: string; patient?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
       console.log(`[mcp] Tool call: get_billing (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const raw = await getBillingHistory(result.mychartRequest) as BillingAccount[];
-        const trimmed = trimBilling(raw);
-        // Paginate visits within each account
-        const paginated = trimmed.map(acct => ({
-          ...acct,
-          totalVisits: acct.visits.length,
-          visits: paginate(acct.visits, args.limit ?? 10, args.offset),
-        }));
-        return jsonResult(paginated);
+        const data = await runInPatientContext(result.mychartRequest, args.patient, async (req) => {
+          const raw = await getBillingHistory(req) as BillingAccount[];
+          const trimmed = trimBilling(raw);
+          // Paginate visits within each account
+          return trimmed.map(acct => ({
+            ...acct,
+            totalVisits: acct.visits.length,
+            visits: paginate(acct.visits, args.limit ?? 10, args.offset),
+          }));
+        });
+        return jsonResult(data);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] get_billing: error -`, error.message, error.stack);
@@ -713,6 +764,7 @@ export function createMcpServer(userId: string): McpServer {
       }
     }
   );
+
   registerScraperTool(server, userId, reg,'get_care_team', getCareTeam);
   registerScraperTool(server, userId, reg,'get_insurance', getInsurance);
   registerScraperTool(server, userId, reg,'get_immunizations', getImmunizations);
@@ -730,11 +782,12 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await addEmergencyContact(result.mychartRequest, {
-          name: args.name,
-          relationshipType: args.relationship_type,
-          phoneNumber: args.phone_number,
-        });
+        const data = await runPinnedToSelf(result.mychartRequest,
+          (req) => addEmergencyContact(req, {
+            name: args.name,
+            relationshipType: args.relationship_type,
+            phoneNumber: args.phone_number,
+          }));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -751,12 +804,13 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await updateEmergencyContact(result.mychartRequest, {
-          id: args.id,
-          name: args.name,
-          relationshipType: args.relationship_type,
-          phoneNumber: args.phone_number,
-        });
+        const data = await runPinnedToSelf(result.mychartRequest,
+          (req) => updateEmergencyContact(req, {
+            id: args.id,
+            name: args.name,
+            relationshipType: args.relationship_type,
+            phoneNumber: args.phone_number,
+          }));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -773,7 +827,8 @@ export function createMcpServer(userId: string): McpServer {
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const data = await removeEmergencyContact(result.mychartRequest, args.id);
+        const data = await runPinnedToSelf(result.mychartRequest,
+          (req) => removeEmergencyContact(req, args.id));
         return jsonResult(data);
       } catch (err) {
         const error = err as Error;
@@ -790,18 +845,22 @@ export function createMcpServer(userId: string): McpServer {
   registerScraperTool(server, userId, reg,'get_care_journeys', getCareJourneys);
   registerScraperTool(server, userId, reg,'get_activity_feed', getActivityFeed);
   registerScraperTool(server, userId, reg,'get_education_materials', getEducationMaterials);
-  registerScraperTool(server, userId, reg,'get_ehi_export', getEhiExportTemplates);
+  registerScraperTool(server, userId, reg,'get_ehi_export', getEhiExportTemplates, 'self');
+
   // Imaging — trimmed (strips report HTML, keeps impression text)
   reg('get_imaging_results',
-    async (args: { instance?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
+    async (args: { instance?: string; patient?: string; limit?: number; offset?: number }): Promise<CallToolResult> => {
       console.log(`[mcp] Tool call: get_imaging_results (user=${userId}, instance=${args.instance || 'auto'})`);
       try {
         const result = await resolveRequest(userId, args.instance);
         if ('error' in result) return errorResult(result.error);
-        const raw = await getImagingResults(result.mychartRequest) as ImagingResult[];
-        const trimmed = trimImagingResults(raw);
-        const page = paginate(trimmed, args.limit ?? 10, args.offset);
-        return jsonResult({ total: trimmed.length, offset: args.offset ?? 0, count: page.length, results: page });
+        const data = await runInPatientContext(result.mychartRequest, args.patient, async (req) => {
+          const raw = await getImagingResults(req) as ImagingResult[];
+          const trimmed = trimImagingResults(raw);
+          const page = paginate(trimmed, args.limit ?? 10, args.offset);
+          return { total: trimmed.length, offset: args.offset ?? 0, count: page.length, results: page };
+        });
+        return jsonResult(data);
       } catch (err) {
         const error = err as Error;
         console.error(`[mcp] get_imaging_results: error -`, error.message, error.stack);
@@ -810,7 +869,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Get available appointment slots
+  // Get available appointment slots (stub — self-pinned when real impl arrives)
   reg('get_available_appointments',
     async (_args: { instance?: string; provider_name?: string; visit_type?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'get_available_appointments' });
@@ -818,7 +877,7 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Book appointment
+  // Book appointment (stub — self-pinned when real impl arrives)
   reg('book_appointment',
     async (_args: { instance?: string; slot_id: string; reason?: string }): Promise<CallToolResult> => {
       sendTelemetryEvent('mcp_tool_called', { tool_name: 'book_appointment' });
@@ -826,11 +885,11 @@ export function createMcpServer(userId: string): McpServer {
     }
   );
 
-  // Linked accounts — trimmed (drops logo URLs)
+  // Linked accounts — trimmed (drops logo URLs) — self-pinned
   registerScraperTool(server, userId, reg,'get_linked_mychart_accounts', async (req) => {
     const raw = await getLinkedMyChartAccounts(req) as LinkedMyChart[];
     return trimLinkedAccounts(raw);
-  });
+  }, 'self');
 
   return server;
 }
