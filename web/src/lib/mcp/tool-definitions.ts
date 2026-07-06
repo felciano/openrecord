@@ -15,8 +15,17 @@ const instanceParam = {
   ),
 };
 
+const patientParam = {
+  patient: z.string().optional().describe(
+    'Patient name or ID from list_patients, for MyChart accounts with proxy access ' +
+    'to family members. Omit for the account holder\'s own record.'
+  ),
+};
+
+const patientScopedParams = { ...instanceParam, ...patientParam };
+
 const paginatedParams = {
-  ...instanceParam,
+  ...patientScopedParams,
   limit: z.number().optional().describe('Max results to return (default 10)'),
   offset: z.number().optional().describe('Number of results to skip (default 0)'),
 };
@@ -49,6 +58,15 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       ),
     },
   },
+  {
+    name: 'list_patients',
+    description:
+      'List the patients accessible from this MyChart account: the account holder plus ' +
+      'any proxy patients (family members). Returns [] if the account has no proxy access. ' +
+      'Pass a result\'s name or id as the `patient` parameter on read tools to fetch that ' +
+      'patient\'s records.',
+    inputSchema: instanceParam,
+  },
 
   // Auth tools
   {
@@ -62,29 +80,29 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 
-  // Simple scraper tools (instance-only param)
-  { name: 'get_profile', description: 'Get patient profile (name, DOB, MRN, PCP) and email', inputSchema: instanceParam },
-  { name: 'get_health_summary', description: 'Get health summary (vitals, blood type, etc.)', inputSchema: instanceParam },
-  { name: 'get_medications', description: 'Get current medications list', inputSchema: instanceParam },
-  { name: 'get_allergies', description: 'Get allergies list', inputSchema: instanceParam },
-  { name: 'get_health_issues', description: 'Get health issues / active conditions', inputSchema: instanceParam },
-  { name: 'get_upcoming_visits', description: 'Get upcoming appointments', inputSchema: instanceParam },
-  { name: 'get_care_team', description: 'Get care team members', inputSchema: instanceParam },
-  { name: 'get_insurance', description: 'Get insurance information', inputSchema: instanceParam },
-  { name: 'get_immunizations', description: 'Get immunization records', inputSchema: instanceParam },
-  { name: 'get_preventive_care', description: 'Get preventive care items and recommendations', inputSchema: instanceParam },
-  { name: 'get_referrals', description: 'Get referral information', inputSchema: instanceParam },
-  { name: 'get_medical_history', description: 'Get medical history (past conditions, surgical history, family history)', inputSchema: instanceParam },
-  { name: 'get_letters', description: 'Get letters (after-visit summaries, clinical documents)', inputSchema: instanceParam },
-  { name: 'get_vitals', description: 'Get vitals and track-my-health flowsheet data (weight, blood pressure, etc.)', inputSchema: instanceParam },
-  { name: 'get_emergency_contacts', description: 'Get emergency contacts', inputSchema: instanceParam },
-  { name: 'get_documents', description: 'Get clinical documents', inputSchema: instanceParam },
-  { name: 'get_goals', description: 'Get care team and patient goals', inputSchema: instanceParam },
-  { name: 'get_upcoming_orders', description: 'Get upcoming orders (labs, imaging, procedures)', inputSchema: instanceParam },
-  { name: 'get_questionnaires', description: 'Get questionnaires and health assessments', inputSchema: instanceParam },
-  { name: 'get_care_journeys', description: 'Get care journeys and care plans', inputSchema: instanceParam },
-  { name: 'get_activity_feed', description: 'Get recent activity feed items', inputSchema: instanceParam },
-  { name: 'get_education_materials', description: 'Get assigned education materials', inputSchema: instanceParam },
+  // Simple scraper tools (patient-scoped)
+  { name: 'get_profile', description: 'Get patient profile (name, DOB, MRN, PCP) and email', inputSchema: patientScopedParams },
+  { name: 'get_health_summary', description: 'Get health summary (vitals, blood type, etc.)', inputSchema: patientScopedParams },
+  { name: 'get_medications', description: 'Get current medications list', inputSchema: patientScopedParams },
+  { name: 'get_allergies', description: 'Get allergies list', inputSchema: patientScopedParams },
+  { name: 'get_health_issues', description: 'Get health issues / active conditions', inputSchema: patientScopedParams },
+  { name: 'get_upcoming_visits', description: 'Get upcoming appointments', inputSchema: patientScopedParams },
+  { name: 'get_care_team', description: 'Get care team members', inputSchema: patientScopedParams },
+  { name: 'get_insurance', description: 'Get insurance information', inputSchema: patientScopedParams },
+  { name: 'get_immunizations', description: 'Get immunization records', inputSchema: patientScopedParams },
+  { name: 'get_preventive_care', description: 'Get preventive care items and recommendations', inputSchema: patientScopedParams },
+  { name: 'get_referrals', description: 'Get referral information', inputSchema: patientScopedParams },
+  { name: 'get_medical_history', description: 'Get medical history (past conditions, surgical history, family history)', inputSchema: patientScopedParams },
+  { name: 'get_letters', description: 'Get letters (after-visit summaries, clinical documents)', inputSchema: patientScopedParams },
+  { name: 'get_vitals', description: 'Get vitals and track-my-health flowsheet data (weight, blood pressure, etc.)', inputSchema: patientScopedParams },
+  { name: 'get_emergency_contacts', description: 'Get emergency contacts', inputSchema: patientScopedParams },
+  { name: 'get_documents', description: 'Get clinical documents', inputSchema: patientScopedParams },
+  { name: 'get_goals', description: 'Get care team and patient goals', inputSchema: patientScopedParams },
+  { name: 'get_upcoming_orders', description: 'Get upcoming orders (labs, imaging, procedures)', inputSchema: patientScopedParams },
+  { name: 'get_questionnaires', description: 'Get questionnaires and health assessments', inputSchema: patientScopedParams },
+  { name: 'get_care_journeys', description: 'Get care journeys and care plans', inputSchema: patientScopedParams },
+  { name: 'get_activity_feed', description: 'Get recent activity feed items', inputSchema: patientScopedParams },
+  { name: 'get_education_materials', description: 'Get assigned education materials', inputSchema: patientScopedParams },
   { name: 'get_ehi_export', description: 'Get electronic health information export templates', inputSchema: instanceParam },
   { name: 'get_linked_mychart_accounts', description: 'Get linked MyChart accounts from other healthcare organizations', inputSchema: instanceParam },
 
@@ -94,14 +112,14 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: 'Get past visits/appointments. Optionally specify years_back (default 2).',
     inputSchema: {
       years_back: z.number().optional(),
-      ...instanceParam,
+      ...patientScopedParams,
     },
   },
   {
     name: 'get_visit_notes',
     description: 'List clinical notes (operative notes, anesthesia notes, progress notes, etc.) attached to a past visit. Returns each note\'s hnoId/hnoDat plus a shared lrpId used to fetch individual note content with get_note_content. Use get_past_visits first to get the CSN.',
     inputSchema: {
-      ...instanceParam,
+      ...patientScopedParams,
       csn: z.string().describe('Visit CSN (encounter ID) from get_past_visits'),
     },
   },
@@ -109,7 +127,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'get_note_content',
     description: 'Fetch the rendered HTML content of a single clinical note. Requires the csn, lrpId, hnoId, and hnoDat from get_visit_notes.',
     inputSchema: {
-      ...instanceParam,
+      ...patientScopedParams,
       csn: z.string().describe('Visit CSN (encounter ID)'),
       lrp_id: z.string().describe('Linked report pointer ID from get_visit_notes (shared by all notes in the visit)'),
       hno_id: z.string().describe('Specific note ID from get_visit_notes'),
@@ -120,7 +138,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'get_visit_avs',
     description: 'Fetch the After Visit Summary (AVS) HTML for a past visit. Returns the full discharge/visit summary with instructions, medications, and follow-up info. Use get_past_visits first to get the CSN.',
     inputSchema: {
-      ...instanceParam,
+      ...patientScopedParams,
       csn: z.string().describe('Visit CSN (encounter ID) from get_past_visits'),
     },
   },
@@ -133,7 +151,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'get_messages',
     description: 'Get message conversations. Returns subject, date, author, and plain text body (HTML stripped). Supports pagination (default limit 10).',
     inputSchema: {
-      ...instanceParam,
+      ...patientScopedParams,
       limit: z.number().optional().describe('Max conversations to return (default 10)'),
       offset: z.number().optional().describe('Number of conversations to skip (default 0)'),
     },
@@ -142,7 +160,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'get_billing',
     description: 'Get billing history including visits/charges, patient payments (MyChart payments made via credit card), and statements. Supports pagination on visits (default limit 10).',
     inputSchema: {
-      ...instanceParam,
+      ...patientScopedParams,
       limit: z.number().optional().describe('Max visits per account to return (default 10)'),
       offset: z.number().optional().describe('Number of visits to skip (default 0)'),
     },
@@ -241,6 +259,38 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
 ];
+
+// ── Tool scope partition ──
+// Every tool is exactly one of: patient-scoped (accepts `patient`, response
+// wrapped with a patient echo), self-pinned (forced to the account holder's
+// context before running), or meta (no patient data involved).
+// web/src/lib/mcp/__tests__/tool-scopes.test.ts enforces the partition.
+
+export const PATIENT_SCOPED_TOOLS = new Set([
+  'get_profile', 'get_health_summary', 'get_medications', 'get_allergies',
+  'get_health_issues', 'get_upcoming_visits', 'get_care_team', 'get_insurance',
+  'get_immunizations', 'get_preventive_care', 'get_referrals', 'get_medical_history',
+  'get_letters', 'get_vitals', 'get_emergency_contacts', 'get_documents',
+  'get_goals', 'get_upcoming_orders', 'get_questionnaires', 'get_care_journeys',
+  'get_activity_feed', 'get_education_materials',
+  'get_past_visits', 'get_visit_notes', 'get_note_content', 'get_visit_avs',
+  'get_lab_results', 'get_messages', 'get_billing', 'get_imaging_results',
+]);
+
+export const SELF_PINNED_TOOLS = new Set([
+  // Reads that exist to support self-only write flows, or account-level reads.
+  'get_message_recipients', 'get_available_appointments',
+  'get_ehi_export', 'get_linked_mychart_accounts',
+  // Writes/actions: v1 deliberately cannot act on a proxy patient's chart.
+  'send_message', 'send_reply', 'request_refill',
+  'add_emergency_contact', 'update_emergency_contact', 'remove_emergency_contact',
+  'book_appointment',
+]);
+
+export const META_TOOLS = new Set([
+  'list_accounts', 'connect_instance', 'check_session', 'complete_2fa',
+  'list_patients',
+]);
 
 /** Lookup a tool definition by name. Throws if not found. */
 export function toolDef(name: string): ToolDefinition {
