@@ -75,6 +75,40 @@ Built on the proxy-context helpers from upstream PR #194. The web MCP server
 is the only proxy-aware surface for now; the OpenClaw plugin and Claude
 Desktop extension remain self-only.
 
+### Combining multiple accounts and proxy patients
+
+The two selectors are orthogonal and compose: `instance` picks which MyChart
+*login* (which provider account), `patient` picks which *person* within that
+login's proxy grants. Each account gets its own session with its own proxy
+roster, verification state, and serialization — proxy grants at one provider
+never leak into another. `list_accounts` enumerates logins;
+`list_patients` (with `instance` when several are connected) enumerates the
+people reachable within one.
+
+Once more than one account is connected, calls that don't specify `instance`
+fail with the list of valid `hostname:username` options — same fail-closed
+rule as patient resolution, so an ambiguous request never guesses a login,
+a provider, or a person.
+
+### Family members with their own MyChart accounts
+
+Two ways to reach a family member's record, in order of preference:
+
+1. **Provider-granted proxy access** on your own login (the standard
+   arrangement for minors and caregiving). They appear in `list_patients`
+   and you target them with `patient` — nothing to configure. The provider's
+   audit trail correctly records you acting as proxy, and access survives
+   their password changes. Note that many US providers automatically reduce
+   parent-proxy visibility when a child turns 12–13, so proxy may show a
+   subset of what their own account shows.
+2. **Adding their account directly** (you hold their credentials): add it as
+   another account — hostname, their username/password, TOTP secret if
+   possible. If it's the same hospital system as yours, two accounts share a
+   hostname and tools take `instance: "hostname:their-username"`. Within
+   their session, *they* are "self". Be aware the provider's access logs
+   will show their account logging in, rather than proxy access by you —
+   prefer option 1 where the provider offers it.
+
 MCP servers added in Claude Desktop automatically sync to the **Claude mobile app** and any other MCP-compatible client.
 
 ### 2. OpenClaw Plugin (Local, No Server)
